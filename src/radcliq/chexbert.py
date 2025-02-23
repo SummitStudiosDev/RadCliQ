@@ -1,8 +1,6 @@
-#!/usr/bin/env python
-# coding: utf-8
-
 from transformers import BertModel, AutoModel
 import torch.nn as nn
+import torch
 class bert_encoder(nn.Module):
     def __init__(self, logits, p=0.1, clinical=False, freeze_embeddings=False, pretrain_path=None):
         """ Init the labeler module
@@ -52,57 +50,6 @@ class bert_encoder(nn.Module):
             for i in range(14):
                 out.append(self.linear_heads[i](cls_hidden))
         return out
-
-
-
-import torch
-from transformers import BertTokenizer
-from tqdm import tqdm
-import numpy as np
-np.int = int
-np.float = float
-import re
-import pandas as pd
- 
-#Bertscore
-from bert_score import BERTScorer
-import os
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-bertscorer = BERTScorer(
-    model_type="distilroberta-base",
-    batch_size=256,
-    lang="en",
-    rescale_with_baseline=True,
-    idf=False)
-
-
-#Radgraph
-from radgraph import F1RadGraph
-f1radgraph = F1RadGraph(reward_level="simple", model_type= 'radgraph')
-
-#Chexbert
-BATCH_SIZE = 5
-tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-model = bert_encoder(False)
-model = nn.DataParallel(model)
-model = model.to(device)
-checkpoint = torch.load('CXR-Report-Metric/chexbert.pth')
-model.load_state_dict(checkpoint['model_state_dict'])
-
-#BLEU-2
-from fast_bleu import BLEU
-weights = {"bigram": (1/2., 1/2.)}
-
-#composite 
-import pickle
-COLS = ["radgraph_combined", "bertscore", "semb_score", "bleu_score"]
-NORMALIZER_PATH = "CXR-Report-Metric/CXRMetric/normalizer.pkl"
-COMPOSITE_METRIC_V0_PATH = "CXR-Report-Metric/CXRMetric/composite_metric_model.pkl"
-COMPOSITE_METRIC_V1_PATH = "CXR-Report-Metric/CXRMetric/radcliq-v1.pkl"
-
-
-
 
 def tokenize(impressions, tokenizer):
         new_impressions = []
@@ -154,7 +101,7 @@ def create_batches(array_length, batch_size):
         batch_indices = list(range(i, min(i + batch_size, array_length)))
         batches.append(batch_indices)
     return batches
-def gen_embeddings(to_tokenize):
+def gen_embeddings(to_tokenize, tokenizer, model, BATCH_SIZE, device):
     encoded_imp = tokenize(to_tokenize, tokenizer)
     length_of_data = len(encoded_imp)
     batches = create_batches(length_of_data, BATCH_SIZE)
@@ -172,10 +119,10 @@ def gen_embeddings(to_tokenize):
                     rep[idx] = out[j].to('cpu')
     return(rep)
 #def add_semb_col(pred_df):
-def add_semb_col(hyps, refs):
+def add_semb_col(hyps, refs, tokenizer, model, BATCH_SIZE, device):
     """Computes s_emb and adds scores as a column to prediction df."""
-    label_embeds = gen_embeddings(refs)
-    pred_embeds = gen_embeddings(hyps)
+    label_embeds = gen_embeddings(refs, tokenizer, model, BATCH_SIZE, device)
+    pred_embeds = gen_embeddings(hyps, tokenizer, model, BATCH_SIZE, device)
     list_label_embeds = []
     list_pred_embeds = []
     for data_idx in sorted(label_embeds.keys()):
@@ -191,128 +138,3 @@ def add_semb_col(hyps, refs):
     #pred_df["semb_score"] = scores
     #return pred_df
     return scores
-
-
-
-def add_radgraph_col(hyps, refs):
-    mean_reward, reward_list, hypothesis_annotation_lists, reference_annotation_lists = f1radgraph(hyps=hyps, refs=refs)
-    return reward_list
-    #pred_df["radgraph_combined"] = reward_list
-    #return pred_df
-
-
-
-def prep_reports(reports):
-    """Preprocesses reports"""
-    return [list(filter(
-        lambda val: val !=  "", str(elem)\
-            .lower().replace(".", " .").split(" "))) for elem in reports]
-def add_bleu_col(hyps, refs):
-    bleu_scores = []
-    for i in range(len(hyps)):
-        gt_report = prep_reports([refs[i]])[0]
-        predicted_report = prep_reports([hyps[i]])[0]
-        bleu = BLEU([gt_report], weights)
-        score = bleu.get_score([predicted_report])["bigram"]
-        bleu_scores.append(score[0])
-    return bleu_scores
-
-
-
-def add_bertscore_col(hyps, refs, use_idf):
-    """Computes BERTScore and adds scores as a column to prediction df."""
-    test_reports = refs
-    test_reports = [re.sub(r' +', ' ', test) for test in test_reports]
-    method_reports = hyps
-    method_reports = [re.sub(r' +', ' ', report) for report in method_reports]
-
-    _, _, f1 = bertscorer.score(method_reports, test_reports)
-    #pred_df["bertscore"] = f1
-    #return pred_df
-    return f1.tolist()
-
-
-
-class CompositeMetric:
-    """The RadCliQ-v1 composite metric.
-
-    Attributes:
-        scaler: Input normalizer.
-        coefs: Coefficients including the intercept.
-    """
-    def __init__(self, scaler, coefs):
-        """Initializes the composite metric with a normalizer and coefficients.
-
-        Args:
-            scaler: Input normalizer.
-            coefs: Coefficients including the intercept.
-        """
-        self.scaler = scaler
-        self.coefs = coefs
-
-    def predict(self, x):
-        """Generates composite metric score for input.
-
-        Args:
-            x: Input data.
-
-        Returns:
-            Composite metric score.
-        """
-        norm_x = self.scaler.transform(x)
-        norm_x = np.concatenate(
-            (norm_x, np.ones((norm_x.shape[0], 1))), axis=1)
-        pred = norm_x @ self.coefs
-        return pred
-
-
-
-def get_individual_metrics(hyps,refs):
-    assert len(hyps) == len(refs)
-    df = pd.DataFrame({
-        'bleu_score': add_bleu_col(hyps,refs),
-        'bertscore': add_bertscore_col(hyps,refs,False),
-        'semb_score': add_semb_col(hyps, refs),
-        'radgraph_combined': add_radgraph_col(hyps, refs)
-    })
-    return df
-def calc_radcliq_v0(hyps,refs):
-    df = get_individual_metrics(hyps,refs)
-    with open(COMPOSITE_METRIC_V0_PATH, "rb") as f:
-        composite_metric_v0_model = pickle.load(f)
-    with open(NORMALIZER_PATH, "rb") as f:
-        normalizer = pickle.load(f)
-    input_data = np.array(df[COLS])
-    norm_input_data = normalizer.transform(input_data)
-    radcliq_v0_scores = composite_metric_v0_model.predict(norm_input_data)
-    return radcliq_v0_scores
-def calc_radcliq_v1(hyps,refs):
-    df = get_individual_metrics(hyps,refs)
-    with open(COMPOSITE_METRIC_V1_PATH, "rb") as f:
-        composite_metric_v1_model = pickle.load(f)
-    input_data = np.array(df[COLS])
-    radcliq_v1_scores = composite_metric_v1_model.predict(input_data)
-    return radcliq_v1_scores
-
-
-
-'''
-refs = [
-    "Interstitial opacities without changes.",
-    "Interval development of segmental heterogeneous airspace opacities throughout the lungs . No significant pneumothorax or pleural effusion . Bilateral calcified pleural plaques are scattered throughout the lungs . The heart is not significantly enlarged .",
-    "Lung volumes are low, causing bronchovascular crowding. The cardiomediastinal silhouette is unremarkable. No focal consolidation, pleural effusion, or pneumothorax detected. Within the limitations of chest radiography, osseous structures are unremarkable.",
-    "no acute cardiopulmonary abnormality",
-    "no acute cardiopulmonary abnormality",
-]
-hyps = [
-    "Interstitial opacities at bases without changes.",
-    "Interval development of segmental heterogeneous airspace opacities throughout the lungs . No significant pneumothorax or pleural effusion . Bilateral calcified pleural plaques are scattered throughout the lungs . The heart is not significantly enlarged .",
-    "Endotracheal and nasogastric tubes have been removed. Changes of median sternotomy, with continued leftward displacement of the fourth inferiomost sternal wire. There is continued moderate-to-severe enlargement of the cardiac silhouette. Pulmonary aeration is slightly improved, with residual left lower lobe atelectasis. Stable central venous congestion and interstitial pulmonary edema. Small bilateral pleural effusions are unchanged.",
-    "no acute cardiopulmonary abnormality",
-    "extreme acute cardiopulmonary abnormality",
-]
-print(get_individual_metrics(hyps,refs))
-calculated_radcliq = calc_radcliq_v1(hyps,refs)
-#one_over_radcliq = [1/s for s in calculated_radcliq]
-print(calculated_radcliq)
-'''
