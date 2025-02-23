@@ -1,6 +1,10 @@
 from transformers import BertModel, AutoModel
 import torch.nn as nn
 import torch
+import numpy as np
+np.int = int
+np.float = float
+
 class bert_encoder(nn.Module):
     def __init__(self, logits, p=0.1, clinical=False, freeze_embeddings=False, pretrain_path=None):
         """ Init the labeler module

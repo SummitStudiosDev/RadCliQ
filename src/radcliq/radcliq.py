@@ -44,22 +44,23 @@ from radgraph import F1RadGraph
 import pickle
 from radgraph import F1RadGraph
 import os
-from fast_bleu import BLEU
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import torch.nn as nn
 
-from chexbert import bert_encoder, add_semb_col
-from bleu2 import add_bleu_col
-from radgraphcol import add_radgraph_col
-from bertscore import add_bertscore_col
+from .chexbert import bert_encoder, add_semb_col
+from .bleu2 import add_bleu_col
+from .radgraphcol import add_radgraph_col
+from .bertscore import add_bertscore_col
 
 
 class RadCliQ:
     def __init__(self):
+        self.class_file_dir = os.path.dirname(os.path.abspath(__file__))
+
         self.COLS = ["radgraph_combined", "bertscore", "semb_score", "bleu_score"]
-        self.NORMALIZER_PATH = "CXR-Report-Metric/CXRMetric/normalizer.pkl"
-        self.COMPOSITE_METRIC_V0_PATH = "CXR-Report-Metric/CXRMetric/composite_metric_model.pkl"
-        self.COMPOSITE_METRIC_V1_PATH = "CXR-Report-Metric/CXRMetric/radcliq-v1.pkl"
+        self.NORMALIZER_PATH = self.class_file_dir+"/CXR-Report-Metric/CXRMetric/normalizer.pkl"
+        self.COMPOSITE_METRIC_V0_PATH = self.class_file_dir+"/CXR-Report-Metric/CXRMetric/composite_metric_model.pkl"
+        self.COMPOSITE_METRIC_V1_PATH = self.class_file_dir+"/CXR-Report-Metric/CXRMetric/radcliq-v1.pkl"
         self.BATCH_SIZE = 5
 
         self.f1radgraph = F1RadGraph(reward_level="simple", model_type= 'radgraph')
@@ -75,13 +76,14 @@ class RadCliQ:
         self.model = bert_encoder(False)
         self.model = nn.DataParallel(self.model)
         self.model = self.model.to(self.device)
-        self.checkpoint = torch.load('CXR-Report-Metric/chexbert.pth')
+        self.checkpoint = torch.load(self.class_file_dir+'/CXR-Report-Metric/chexbert.pth')
         self.model.load_state_dict(self.checkpoint['model_state_dict'])
+
 
     def get_individual_metrics(self, hyps,refs):
         assert len(hyps) == len(refs)
         df = pd.DataFrame({
-            'bleu_score': add_bleu_col(hyps,refs, self.BLEU),
+            'bleu_score': add_bleu_col(hyps,refs),
             'bertscore': add_bertscore_col(hyps,refs,False, self.bertscorer),
             'semb_score': add_semb_col(hyps, refs, self.tokenizer, self.model, self.BATCH_SIZE, self.device),
             'radgraph_combined': add_radgraph_col(hyps, refs, self.f1radgraph)

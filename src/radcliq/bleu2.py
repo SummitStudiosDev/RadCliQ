@@ -1,10 +1,11 @@
+from fast_bleu import BLEU
 weights = {"bigram": (1/2., 1/2.)}
 def prep_reports(reports):
     """Preprocesses reports"""
     return [list(filter(
         lambda val: val !=  "", str(elem)\
             .lower().replace(".", " .").split(" "))) for elem in reports]
-def add_bleu_col(hyps, refs, BLEU):
+def add_bleu_col(hyps, refs):
     bleu_scores = []
     for i in range(len(hyps)):
         gt_report = prep_reports([refs[i]])[0]
